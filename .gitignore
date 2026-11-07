@@ -11,3 +11,4 @@ modules.order
 contrib/aur/src/
 contrib/aur/pkg/
 contrib/aur/*.tar.gz
+contrib/aur/.SRCINFO

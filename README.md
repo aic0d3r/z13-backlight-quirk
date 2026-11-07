@@ -58,6 +58,21 @@ sudo pacman -R z13-backlight-quirk-dkms
 reboot
 ```
 
+## Releasing
+
+Push a `vX.Y.Z` tag. The Release workflow builds the package in an Arch
+container, installs it next to stock `linux` headers and checks that DKMS
+built the module, then creates the GitHub release and updates the AUR.
+Run the same check locally with:
+
+```sh
+# after filling the placeholders in a copy of contrib/aur/PKGBUILD
+docker run --rm -v "$PWD/contrib/aur:/pkg" archlinux:latest bash /pkg/check.sh
+```
+
+To republish an existing tag (bumps pkgrel), run the workflow manually with
+that tag.
+
 ## License
 
 GPL-2.0-only, like the kernel file it is based on.

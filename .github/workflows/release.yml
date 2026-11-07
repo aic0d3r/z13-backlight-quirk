@@ -1,0 +1,109 @@
+name: Release
+
+# Push a v* tag: check the DKMS build against stock Arch, create the GitHub
+# release, and publish the PKGBUILD to the AUR (z13-backlight-quirk-dkms).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0) to republish to AUR'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      pkgrel: ${{ steps.meta.outputs.pkgrel }}
+    steps:
+      - id: meta
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          # Increment pkgrel if this version is already on the AUR, else 1.
+          PKGREL=1
+          AUR_VER=$(curl -gfsSL "https://aur.archlinux.org/rpc/v5/info?arg[]=z13-backlight-quirk-dkms" \
+            | jq -r '.results[0].Version // empty')
+          if [ -n "$AUR_VER" ] && [ "${AUR_VER%-*}" = "$VERSION" ]; then
+            PKGREL=$(( ${AUR_VER##*-} + 1 ))
+          fi
+          printf 'tag=%s\nversion=%s\npkgrel=%s\n' "$TAG" "$VERSION" "$PKGREL" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: meta
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --notes-from-tag --title "$GITHUB_REF_NAME"
+
+  aur:
+    needs: [meta, release]
+    runs-on: ubuntu-latest
+    if: >-
+      always() &&
+      !contains(needs.meta.outputs.tag, '-') &&
+      (needs.release.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.release.result == 'skipped'))
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+
+      - name: Patch PKGBUILD
+        run: |
+          URL="https://github.com/aic0d3r/z13-backlight-quirk/archive/refs/tags/${{ needs.meta.outputs.tag }}.tar.gz"
+          SHA256=$(curl -fsSL "$URL" | sha256sum | cut -d' ' -f1)
+          sed -i "s/PKGVER_PLACEHOLDER/${{ needs.meta.outputs.version }}/" contrib/aur/PKGBUILD
+          sed -i "s/PKGREL_PLACEHOLDER/${{ needs.meta.outputs.pkgrel }}/"  contrib/aur/PKGBUILD
+          sed -i "s/SHA256_PLACEHOLDER/${SHA256}/"                         contrib/aur/PKGBUILD
+
+      - name: Build, install with DKMS, generate .SRCINFO
+        run: docker run --rm -v "$PWD/contrib/aur:/pkg" archlinux:latest bash /pkg/check.sh
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          for _ in 1 2 3; do
+            ssh-keyscan -t ed25519,ecdsa,rsa aur.archlinux.org >> ~/.ssh/known_hosts && break
+            sleep 5
+          done
+          test -s ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          EOF
+
+      - name: Push to AUR
+        run: |
+          for _ in 1 2 3; do
+            rm -rf /tmp/aur-repo
+            git clone ssh://aur@aur.archlinux.org/z13-backlight-quirk-dkms.git /tmp/aur-repo && break
+            sleep 5
+          done
+          test -d /tmp/aur-repo/.git
+          sudo chown -R "$USER" contrib/aur
+          cp contrib/aur/PKGBUILD contrib/aur/.SRCINFO /tmp/aur-repo/
+          cd /tmp/aur-repo
+          git config user.name "Z13 Backlight Quirk Release Bot"
+          git config user.email "funforfreeapps@gmail.com"
+          git add PKGBUILD .SRCINFO
+          git diff --cached --quiet && echo "No changes to push" && exit 0
+          git commit -m "Update to ${{ needs.meta.outputs.tag }}-${{ needs.meta.outputs.pkgrel }}"
+          for _ in 1 2 3; do
+            git push && exit 0
+            sleep 5
+          done
+          exit 1
