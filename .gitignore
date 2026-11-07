@@ -1,0 +1,13 @@
+*.o
+*.ko
+*.mod
+*.mod.c
+*.cmd
+.*.cmd
+Module.symvers
+modules.order
+.tmp_versions/
+*.pkg.tar.*
+contrib/aur/src/
+contrib/aur/pkg/
+contrib/aur/*.tar.gz
